@@ -1,0 +1,12 @@
+name: SpeedSwap
+version: 1.0
+main: canh.speedswap.SpeedSwap
+api-version: 1.16
+commands:
+  speedswap:
+    description: Main command for SpeedSwap
+    usage: /speedswap <start|stop> [player1] [player2]
+permissions:
+  speedswap.admin:
+    description: Allows starting and stopping the speedswap game
+    default: op
