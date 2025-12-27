@@ -9,20 +9,23 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerPortalEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scoreboard.*;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Random;
 
 public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
 
     private boolean gameRunning = false;
-    private Player player1;
-    private Player player2;
+    private final List<Player> players = new ArrayList<>();
     private BukkitRunnable swapTask;
     private final int timerSeconds = 60;
     
@@ -34,7 +37,7 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
         getCommand("speedswap").setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
         setupScoreboard();
-        getLogger().info("SpeedSwap 1.16.1 enabled with Seed and Respawn swap support!");
+        getLogger().info("SpeedSwap 1.16.1 enabled with Improved Portal Linking!");
     }
 
     @Override
@@ -65,33 +68,37 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
                 return true;
             }
             if (args.length < 3) {
-                sender.sendMessage(ChatColor.RED + "Usage: /speedswap start <p1> <p2> [seed1] [seed2]");
+                sender.sendMessage(ChatColor.RED + "Usage: /speedswap start <p1> <p2> [p3...] [seeds...]");
                 return true;
             }
 
-            player1 = Bukkit.getPlayer(args[1]);
-            player2 = Bukkit.getPlayer(args[2]);
+            List<Player> tempPlayers = new ArrayList<>();
+            List<Long> seeds = new ArrayList<>();
 
-            if (player1 == null || player2 == null) {
-                sender.sendMessage(ChatColor.RED + "One or both players are offline!");
-                return true;
-            }
-
-            Long seed1 = null;
-            Long seed2 = null;
-
-            if (args.length >= 5) {
-                try {
-                    seed1 = Long.parseLong(args[3]);
-                    seed2 = Long.parseLong(args[4]);
-                } catch (NumberFormatException e) {
-                    sender.sendMessage(ChatColor.RED + "Seeds must be valid numbers!");
-                    return true;
+            for (int i = 1; i < args.length; i++) {
+                Player p = Bukkit.getPlayer(args[i]);
+                if (p != null) {
+                    tempPlayers.add(p);
+                } else {
+                    try {
+                        seeds.add(Long.parseLong(args[i]));
+                    } catch (NumberFormatException e) {
+                        sender.sendMessage(ChatColor.RED + "Unknown player or invalid seed: " + args[i]);
+                        return true;
+                    }
                 }
             }
 
-            startGame(seed1, seed2);
-            sender.sendMessage(ChatColor.GREEN + "SpeedSwap started between " + player1.getName() + " and " + player2.getName());
+            if (tempPlayers.size() < 2) {
+                sender.sendMessage(ChatColor.RED + "You need at least 2 players to start!");
+                return true;
+            }
+
+            players.clear();
+            players.addAll(tempPlayers);
+
+            startGame(seeds);
+            sender.sendMessage(ChatColor.GREEN + "SpeedSwap started with " + players.size() + " players!");
             return true;
         }
 
@@ -104,32 +111,36 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
         return false;
     }
 
-    private void startGame(Long seed1, Long seed2) {
+    private void startGame(List<Long> seeds) {
         gameRunning = true;
+        Random random = new Random();
+        List<World> createdOverworlds = new ArrayList<>();
 
-        player1.sendMessage(ChatColor.YELLOW + "Generating worlds and starting timer...");
-        player2.sendMessage(ChatColor.YELLOW + "Generating worlds and starting timer...");
+        Bukkit.broadcastMessage(ChatColor.YELLOW + "SpeedSwap: Generating " + (players.size() * 3) + " worlds. Please wait...");
 
-        World p1World = createWorldSet(player1.getName(), seed1);
-        World p2World = createWorldSet(player2.getName(), seed2);
+        for (int i = 0; i < players.size(); i++) {
+            Long seed = (i < seeds.size()) ? seeds.get(i) : random.nextLong();
+            createdOverworlds.add(createWorldSet(players.get(i).getName(), seed));
+        }
 
-        player1.teleport(p1World.getSpawnLocation());
-        player2.teleport(p2World.getSpawnLocation());
+        for (int i = 0; i < players.size(); i++) {
+            Player p = players.get(i);
+            World world = createdOverworlds.get(i);
+            
+            p.teleport(world.getSpawnLocation());
+            p.setScoreboard(board);
+            p.sendMessage(ChatColor.GREEN + "All worlds ready! Starting game...");
+        }
 
-        player1.setScoreboard(board);
-        player2.setScoreboard(board);
-
+        // 3. Start the timer logic
         startSwapTimer();
     }
 
-    private World createWorldSet(String playerName, Long seed) {
+    private World createWorldSet(String playerName, long seed) {
         String baseName = "SS_" + playerName;
-        long finalSeed = (seed != null) ? seed : new Random().nextLong();
-
-        World overworld = Bukkit.createWorld(new WorldCreator(baseName).seed(finalSeed));
-        Bukkit.createWorld(new WorldCreator(baseName + "_nether").environment(World.Environment.NETHER).seed(finalSeed));
-        Bukkit.createWorld(new WorldCreator(baseName + "_the_end").environment(World.Environment.THE_END).seed(finalSeed));
-        
+        World overworld = Bukkit.createWorld(new WorldCreator(baseName).seed(seed));
+        Bukkit.createWorld(new WorldCreator(baseName + "_nether").environment(World.Environment.NETHER).seed(seed));
+        Bukkit.createWorld(new WorldCreator(baseName + "_the_end").environment(World.Environment.THE_END).seed(seed));
         return overworld;
     }
 
@@ -139,10 +150,12 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
 
             @Override
             public void run() {
-                if (!player1.isOnline() || !player2.isOnline()) {
-                    Bukkit.broadcastMessage(ChatColor.RED + "A player disconnected. Stopping SpeedSwap.");
-                    stopGame();
-                    return;
+                for (Player p : players) {
+                    if (!p.isOnline()) {
+                        Bukkit.broadcastMessage(ChatColor.RED + p.getName() + " disconnected. Stopping SpeedSwap.");
+                        stopGame();
+                        return;
+                    }
                 }
 
                 updateScoreboard(count);
@@ -171,14 +184,18 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
     }
 
     private void performSwap() {
-        // State Capture for Player 1
-        PlayerData state1 = new PlayerData(player1);
-        // State Capture for Player 2
-        PlayerData state2 = new PlayerData(player2);
+        int size = players.size();
+        PlayerData[] states = new PlayerData[size];
 
-        // Cross-Apply
-        state2.apply(player1);
-        state1.apply(player2);
+        for (int i = 0; i < size; i++) {
+            states[i] = new PlayerData(players.get(i));
+        }
+
+        for (int i = 0; i < size; i++) {
+            int targetStateIndex = (i + 1) % size;
+            states[targetStateIndex].apply(players.get(i));
+            players.get(i).sendMessage(ChatColor.AQUA + "Swapped with " + players.get(targetStateIndex).getName() + "!");
+        }
     }
 
     private static class PlayerData {
@@ -193,7 +210,7 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
         float exp;
         Collection<PotionEffect> effects;
         int fire;
-        Location respawnLoc; // New field for respawn point
+        Location respawnLoc;
 
         PlayerData(Player p) {
             this.loc = p.getLocation();
@@ -207,7 +224,7 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
             this.exp = p.getExp();
             this.effects = p.getActivePotionEffects();
             this.fire = p.getFireTicks();
-            this.respawnLoc = p.getBedSpawnLocation(); // Capture bed/anchor location
+            this.respawnLoc = p.getBedSpawnLocation();
         }
 
         void apply(Player p) {
@@ -227,8 +244,6 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
             p.setLevel(level);
             p.setExp(exp);
             p.setFireTicks(fire);
-            
-            // Apply the new respawn location
             p.setBedSpawnLocation(respawnLoc, true);
 
             for (PotionEffect effect : p.getActivePotionEffects()) {
@@ -239,36 +254,78 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
     }
 
     @EventHandler
+    public void onRespawn(PlayerRespawnEvent event) {
+        if (!gameRunning) return;
+        Player p = event.getPlayer();
+        if (!players.contains(p)) return;
+
+        if (event.isBedSpawn()) return;
+
+        World diedIn = p.getWorld();
+        String worldName = diedIn.getName();
+        if (!worldName.startsWith("SS_")) return;
+
+        String[] parts = worldName.split("_");
+        if (parts.length < 2) return;
+        String baseName = parts[0] + "_" + parts[1];
+
+        World overworld = Bukkit.getWorld(baseName);
+        if (overworld != null) {
+            event.setRespawnLocation(overworld.getSpawnLocation());
+        }
+    }
+
+    @EventHandler
     public void onPortal(PlayerPortalEvent event) {
         if (!gameRunning) return;
         Player p = event.getPlayer();
-        if (p != player1 && p != player2) return;
+        if (!players.contains(p)) return;
 
-        World current = event.getFrom().getWorld();
-        if (current == null) return;
+        World fromWorld = event.getFrom().getWorld();
+        if (fromWorld == null) return;
 
-        String worldName = current.getName();
+        String worldName = fromWorld.getName();
         if (!worldName.startsWith("SS_")) return;
 
-        String baseName = worldName.split("_")[0] + "_" + worldName.split("_")[1];
-        
-        World target;
-        if (event.getCause() == PlayerPortalEvent.TeleportCause.NETHER_PORTAL) {
-            if (worldName.endsWith("_nether")) {
-                target = Bukkit.getWorld(baseName);
-            } else {
-                target = Bukkit.getWorld(baseName + "_nether");
-            }
-        } else {
-            if (worldName.endsWith("_the_end")) {
-                target = Bukkit.getWorld(baseName);
-            } else {
-                target = Bukkit.getWorld(baseName + "_the_end");
-            }
-        }
+        String[] parts = worldName.split("_");
+        if (parts.length < 2) return;
+        String baseName = parts[0] + "_" + parts[1];
 
-        if (target != null) {
-            event.setTo(target.getSpawnLocation());
+        Location fromLoc = event.getFrom();
+        Location toLoc = null;
+
+        if (event.getCause() == PlayerTeleportEvent.TeleportCause.NETHER_PORTAL) {
+            if (worldName.endsWith("_nether")) {
+                World target = Bukkit.getWorld(baseName);
+                if (target != null) {
+                    toLoc = new Location(target, fromLoc.getX() * 8, fromLoc.getY(), fromLoc.getZ() * 8);
+                }
+            } else {
+                World target = Bukkit.getWorld(baseName + "_nether");
+                if (target != null) {
+                    toLoc = new Location(target, fromLoc.getX() / 8, fromLoc.getY(), fromLoc.getZ() / 8);
+                }
+            }
+            if (toLoc != null) {
+                event.setTo(toLoc);
+                event.setCanCreatePortal(true);
+                event.setSearchRadius(128);
+            }
+        } else if (event.getCause() == PlayerTeleportEvent.TeleportCause.END_PORTAL) {
+            if (worldName.endsWith("_the_end")) {
+                World target = Bukkit.getWorld(baseName);
+                if (target != null) {
+                    toLoc = target.getSpawnLocation();
+                }
+            } else {
+                World target = Bukkit.getWorld(baseName + "_the_end");
+                if (target != null) {
+                    toLoc = new Location(target, 100.5, 50, 0.5, 90f, 0f);
+                }
+            }
+            if (toLoc != null) {
+                event.setTo(toLoc);
+            }
         }
     }
 
@@ -279,7 +336,9 @@ public class SpeedSwap extends JavaPlugin implements CommandExecutor, Listener {
             swapTask = null;
         }
         Scoreboard mainBoard = Bukkit.getScoreboardManager().getMainScoreboard();
-        if (player1 != null && player1.isOnline()) player1.setScoreboard(mainBoard);
-        if (player2 != null && player2.isOnline()) player2.setScoreboard(mainBoard);
+        for (Player p : players) {
+            if (p.isOnline()) p.setScoreboard(mainBoard);
+        }
+        players.clear();
     }
 }
